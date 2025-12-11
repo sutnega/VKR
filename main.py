@@ -121,14 +121,18 @@ def fetch_rss_source(name: str, cfg: Dict[str, Any]) -> List[NewsItem]:
         title_el = item.find("title")
         link_el = item.find("link")
         desc_el = item.find("description")
-        date_el = item.find("pubDate") or item.find("{http://purl.org/dc/elements/1.1/}date")
+
+        # Deprecation-safe поиск даты
+        date_el = item.find("pubDate")
+        if date_el is None:
+            date_el = item.find("{http://purl.org/dc/elements/1.1/}date")
 
         title = (title_el.text or "").strip() if title_el is not None else ""
         link = (link_el.text or "").strip() if link_el is not None else ""
         desc = (desc_el.text or "").strip() if desc_el is not None else ""
         pub_raw = (date_el.text or "").strip() if date_el is not None else ""
 
-        pub_dt = parse_rss_datetime(pub_raw)
+        pub_dt = parse_rss_datetime(pub_raw) if pub_raw else None
         pub_iso = pub_dt.isoformat() if pub_dt is not None else None
 
         if not link:
@@ -153,7 +157,7 @@ def fetch_rss_source(name: str, cfg: Dict[str, Any]) -> List[NewsItem]:
     return items
 
 
-# ---------------------- HTML sources: UpackUnion ----------------------
+# ---------------------- HTML sources: common helpers ----------------------
 
 
 RU_MONTHS = {
@@ -173,6 +177,15 @@ RU_MONTHS = {
 }
 
 
+def strip_html(text: str) -> str:
+    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.I)
+    text = re.sub(r"<.*?>", "", text)
+    return unescape(text).strip()
+
+
+# ---------------------- HTML sources: UpackUnion ----------------------
+
+
 def parse_upackunion_date(text: str) -> Optional[dt.datetime]:
     """
     Примеры формата:
@@ -184,7 +197,6 @@ def parse_upackunion_date(text: str) -> Optional[dt.datetime]:
     if not m:
         return None
     month_name = m.group(1).lower()
-    # укоротим до первых 3 букв
     month_key = month_name[:3]
     month = RU_MONTHS.get(month_key)
     if not month:
@@ -197,25 +209,25 @@ def parse_upackunion_date(text: str) -> Optional[dt.datetime]:
         return None
 
 
-def strip_html(text: str) -> str:
-    # Удаляем простейшие теги, не претендуем на идеальность
-    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.I)
-    text = re.sub(r"<.*?>", "", text)
-    return unescape(text).strip()
-
-
 def fetch_upackunion_articles(cfg: Dict[str, Any]) -> List[NewsItem]:
+    """
+    Парсим именно рубрику /cat/stati/:
+    берем блоки <article class="mg-posts-sec-post ..."> прямо со страниц
+    пагинации, чтобы не грузить каждую статью отдельно.
+    """
     base_url: str = cfg["base_url"]
     pages: int = cfg.get("pages", 1)
+    max_articles: int = cfg.get("max_articles", 30)
     name: str = cfg.get("name", "upackunion-stati")
 
     print(f"[collector] Читаю HTML '{name}' (UpackUnion) из {base_url} ...")
 
-    article_urls: List[str] = []
+    items: List[NewsItem] = []
     for page in range(1, pages + 1):
         if page == 1:
             url = base_url
         else:
+            # на сайте пагинация в виде /cat/stati/page/2/
             url = base_url.rstrip("/") + f"/page/{page}/"
         try:
             html = http_get(url)
@@ -223,54 +235,66 @@ def fetch_upackunion_articles(cfg: Dict[str, Any]) -> List[NewsItem]:
             print(f"[collector]   ошибка при чтении страницы {url}: {e}")
             continue
 
-        # Ищем ссылки вида /stati/slug/ или https://upackunion.ru/stati/slug/
-        for href in re.findall(r'href="([^"]+)"', html):
-            if "/stati/" in href:
-                full = urljoin(base_url, href)
-                if full not in article_urls:
-                    article_urls.append(full)
+        # выделяем каждый <article class="... mg-posts-sec-post ...">
+        for m_art in re.finditer(
+            r'<article[^>]*class="[^"]*mg-posts-sec-post[^"]*"[^>]*>(.*?)</article>',
+            html,
+            flags=re.S | re.I,
+        ):
+            block = m_art.group(1)
 
-    # Ограничим количество, чтобы не спамить сайт
-    max_articles = cfg.get("max_articles", 30)
-    article_urls = article_urls[:max_articles]
-
-    items: List[NewsItem] = []
-
-    for url in article_urls:
-        try:
-            html = http_get(url)
-        except (HTTPError, URLError) as e:
-            print(f"[collector]   ошибка при чтении статьи {url}: {e}")
-            continue
-
-        # Заголовок
-        m_title = re.search(r"<h1[^>]*>(.*?)</h1>", html, flags=re.S | re.I)
-        title = strip_html(m_title.group(1)) if m_title else url
-
-        # Дата рядом с заголовком
-        m_date = re.search(r"([А-Яа-яЁё]+?\s+\d{1,2},\s*\d{4})", html)
-        pub_dt = parse_upackunion_date(m_date.group(1)) if m_date else None
-        pub_iso = pub_dt.isoformat() if pub_dt is not None else None
-        pub_raw = m_date.group(1) if m_date else None
-
-        # Аннотация — первые ~400 символов текста статьи
-        m_article = re.search(r"<article[^>]*>(.*?)</article>", html, flags=re.S | re.I)
-        body_html = m_article.group(1) if m_article else html
-        body_text = strip_html(body_html)
-        summary = body_text[:400] + ("…" if len(body_text) > 400 else "")
-
-        nid = f"{name}:{url}"
-        items.append(
-            NewsItem(
-                id=nid,
-                source=name,
-                title=title,
-                url=url,
-                published=pub_iso,
-                published_raw=pub_raw,
-                summary=summary or None,
+            # заголовок + URL
+            m_title = re.search(
+                r'<h4[^>]*class="[^"]*entry-title[^"]*"[^>]*>\s*'
+                r'<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
+                block,
+                flags=re.S | re.I,
             )
-        )
+            if not m_title:
+                continue
+            href = m_title.group(1)
+            title_html = m_title.group(2)
+            url_full = urljoin(base_url, href)
+            title = strip_html(title_html)
+
+            # дата
+            m_date = re.search(
+                r'<span[^>]*class="[^"]*mg-blog-date[^"]*"[^>]*>.*?'
+                r'<a[^>]*href="[^"]*">\s*([^<]+)\s*</a>',
+                block,
+                flags=re.S | re.I,
+            )
+            pub_raw = m_date.group(1).strip() if m_date else None
+            pub_dt = parse_upackunion_date(pub_raw) if pub_raw else None
+            pub_iso = pub_dt.isoformat() if pub_dt is not None else None
+
+            # краткое содержание
+            m_summary = re.search(
+                r'<div[^>]*class="[^"]*mg-content[^"]*"[^>]*>\s*<p[^>]*>(.*?)</p>',
+                block,
+                flags=re.S | re.I,
+            )
+            summary = strip_html(m_summary.group(1)) if m_summary else None
+            if summary:
+                summary = summary[:400] + ("…" if len(summary) > 400 else "")
+
+            nid = f"{name}:{url_full}"
+            items.append(
+                NewsItem(
+                    id=nid,
+                    source=name,
+                    title=title,
+                    url=url_full,
+                    published=pub_iso,
+                    published_raw=pub_raw,
+                    summary=summary,
+                )
+            )
+
+            if len(items) >= max_articles:
+                break
+        if len(items) >= max_articles:
+            break
 
     print(f"[collector]   найдено статей: {len(items)}")
     return items
@@ -280,94 +304,101 @@ def fetch_upackunion_articles(cfg: Dict[str, Any]) -> List[NewsItem]:
 
 
 def parse_lesprominform_date(text: str) -> Optional[dt.datetime]:
+    """
+    Формат: 10.12.2025
+    """
     text = text.strip()
-    m = re.search(r"(\d{2}\.\d{2}\.\d{4})(?:\s+(\d{2}:\d{2}))?", text)
-    if not m:
-        return None
-    date_str = m.group(1)
-    time_str = m.group(2) or "12:00"
     try:
-        d = dt.datetime.strptime(f"{date_str} {time_str}", "%d.%m.%Y %H:%M")
+        d = dt.datetime.strptime(text, "%d.%m.%Y")
         return d.replace(tzinfo=dt.timezone.utc)
     except ValueError:
         return None
 
 
 def fetch_lesprominform_news(cfg: Dict[str, Any]) -> List[NewsItem]:
-    base_url: str = cfg["base_url"]
+    """
+    Парсим страницу отношений по тегу ЦБП:
+    https://lesprominform.ru/relations.html?tag=888[&p=2]
+    Берем все <article class="news teaser">, и новости, и статьи.
+    """
+    base_url: str = cfg["base_url"]  # уже с ?tag=888
     name: str = cfg.get("name", "lesprominform-news")
+    pages: int = cfg.get("pages", 1)
+    max_articles: int = cfg.get("max_articles", 50)
 
     print(f"[collector] Читаю HTML '{name}' (Lesprominform) из {base_url} ...")
 
-    try:
-        html = http_get(base_url)
-    except (HTTPError, URLError) as e:
-        print(f"[collector]   ошибка при чтении {base_url}: {e}")
-        return []
-
-    # Ищем ссылки на новости вида news.html?id=NNNNN
-    rel_urls = re.findall(r'href="(news\.html\?id=\d+)"', html)
-    if not rel_urls:
-        print("[collector]   не нашли ссылок news.html?id=...")
-        return []
-
-    # Удаляем дубликаты, сохраняем порядок
-    seen = set()
-    article_urls: List[str] = []
-    for rel in rel_urls:
-        if rel not in seen:
-            seen.add(rel)
-            article_urls.append(urljoin(base_url, rel))
-
-    max_articles = cfg.get("max_articles", 30)
-    article_urls = article_urls[:max_articles]
-
     items: List[NewsItem] = []
 
-    for url in article_urls:
+    for page in range(1, pages + 1):
+        if page == 1:
+            url = base_url
+        else:
+            # если в base_url уже есть ?, добавляем &p=...
+            sep = "&" if "?" in base_url else "?"
+            url = base_url + f"{sep}p={page}"
+
         try:
-            article_html = http_get(url)
+            html = http_get(url)
         except (HTTPError, URLError) as e:
-            print(f"[collector]   ошибка при чтении статьи {url}: {e}")
+            print(f"[collector]   ошибка при чтении {url}: {e}")
             continue
 
-        # Заголовок
-        m_title = re.search(r"<h1[^>]*>(.*?)</h1>", article_html, flags=re.S | re.I)
-        title = strip_html(m_title.group(1)) if m_title else url
+        # для каждой статьи/новости
+        for m_art in re.finditer(
+            r'<article[^>]*class="[^"]*news teaser[^"]*"[^>]*>(.*?)</article>',
+            html,
+            flags=re.S | re.I,
+        ):
+            block = m_art.group(1)
 
-        # Дата
-        m_date = re.search(r"\d{2}\.\d{2}\.\d{4}(?:\s+\d{2}:\d{2})?", article_html)
-        pub_dt = parse_lesprominform_date(m_date.group(0)) if m_date else None
-        pub_iso = pub_dt.isoformat() if pub_dt is not None else None
-        pub_raw = m_date.group(0) if m_date else None
-
-        # Текст статьи — возьмём первый <p> после заголовка
-        body_part = article_html
-        if m_title:
-            pos = m_title.end()
-            body_part = article_html[pos:]
-        m_p = re.search(r"<p[^>]*>(.*?)</p>", body_part, flags=re.S | re.I)
-        if m_p:
-            body_html = m_p.group(1)
-        else:
-            body_html = body_part
-        body_text = strip_html(body_html)
-        summary = body_text[:400] + ("…" if len(body_text) > 400 else "")
-
-        nid = f"{name}:{url}"
-        items.append(
-            NewsItem(
-                id=nid,
-                source=name,
-                title=title,
-                url=url,
-                published=pub_iso,
-                published_raw=pub_raw,
-                summary=summary or None,
+            # дата (верхний маленький див)
+            m_date = re.search(
+                r'<div[^>]*class="[^"]*\bdate\b[^"]*d-inline-block[^"]*"[^>]*>\s*([\d\.]+)\s*</div>',
+                block,
+                flags=re.S | re.I,
             )
-        )
+            date_raw = m_date.group(1).strip() if m_date else None
+            pub_dt = parse_lesprominform_date(date_raw) if date_raw else None
+            pub_iso = pub_dt.isoformat() if pub_dt is not None else None
 
-    print(f"[collector]   найдено новостей: {len(items)}")
+            # заголовок и ссылка
+            m_title = re.search(
+                r'<div[^>]*class="[^"]*\btitle\b[^"]*"[^>]*>\s*'
+                r'<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
+                block,
+                flags=re.S | re.I,
+            )
+            if not m_title:
+                continue
+            href = m_title.group(1)
+            title_html = m_title.group(2)
+            url_full = urljoin(base_url, href)
+            title = strip_html(title_html)
+
+            # используем сам заголовок как краткое описание
+            summary = None
+
+            nid = f"{name}:{url_full}"
+            items.append(
+                NewsItem(
+                    id=nid,
+                    source=name,
+                    title=title,
+                    url=url_full,
+                    published=pub_iso,
+                    published_raw=date_raw,
+                    summary=summary,
+                )
+            )
+
+            if len(items) >= max_articles:
+                break
+
+        if len(items) >= max_articles:
+            break
+
+    print(f"[collector]   найдено элементов: {len(items)}")
     return items
 
 
@@ -389,6 +420,14 @@ THEMATIC_KEYWORDS = [
     "лесопромышлен",
 ]
 
+# Узкоспециализированные источники, для которых тематика почти гарантирована
+NARROW_SOURCES = {
+    "sbo-paper",
+    "rosinvest-bumles",
+    "upackunion-stati",
+    "lesprominform-news",
+}
+
 
 def is_thematic(text: str) -> bool:
     t = text.lower()
@@ -398,40 +437,72 @@ def is_thematic(text: str) -> bool:
 def filter_thematic(items: List[NewsItem]) -> List[NewsItem]:
     if not items:
         return []
-    res: List[NewsItem] = []
+
+    narrow: List[NewsItem] = []
+    generic: List[NewsItem] = []
+
     for it in items:
-        body = " ".join(
-            part
-            for part in (it.title, it.summary or "", it.source)
-            if part
-        ).lower()
+        if it.source in NARROW_SOURCES:
+            narrow.append(it)
+        else:
+            generic.append(it)
+
+    passed_generic: List[NewsItem] = []
+    for it in generic:
+        body = " ".join(part for part in (it.title, it.summary or "", it.source) if part)
         if is_thematic(body):
-            res.append(it)
-    print(f"[service] Тематический фильтр (ЦБП/упаковка): оставлено {len(res)} из {len(items)}")
+            passed_generic.append(it)
+
+    res = narrow + passed_generic
+    print(
+        f"[service] Тематический фильтр (ЦБП/упаковка): оставлено {len(res)} из {len(items)} "
+        f"(из них {len(narrow)} — узкоспециализированные источники без фильтра)"
+    )
     return res
 
 
 def filter_by_date(items: List[NewsItem], max_age_days: int) -> List[NewsItem]:
+    """
+    max_age_days >= 0:
+        - для новостей с корректной датой: оставляем только те, что не старше порога;
+        - для новостей без даты / с ошибкой парсинга: НЕ выбрасываем, а помечаем published_raw,
+          как минимум 'ДАТА ОТСУТСТВУЕТ', и оставляем.
+    """
     if max_age_days < 0:
+        print("[service] Фильтр по дате отключён (max_age_days < 0).")
         return items
+
     now = dt.datetime.now(dt.timezone.utc)
     res: List[NewsItem] = []
-    skipped_no_date = 0
+    no_date_or_error = 0
+    with_date_checked = 0
+
     for it in items:
         if not it.published:
-            skipped_no_date += 1
+            no_date_or_error += 1
+            # если вообще ничего нет — явно помечаем
+            if not it.published_raw:
+                it = dataclasses.replace(it, published_raw="ДАТА ОТСУТСТВУЕТ")
+            res.append(it)
             continue
+
         try:
             d = dt.datetime.fromisoformat(it.published)
         except Exception:
-            skipped_no_date += 1
+            no_date_or_error += 1
+            it = dataclasses.replace(it, published_raw="ДАТА ОТСУТСТВУЕТ")
+            res.append(it)
             continue
+
+        with_date_checked += 1
         age = now - d
         if age.days <= max_age_days:
             res.append(it)
+
     print(
         f"[service] Фильтр по дате: оставлено {len(res)} из {len(items)} "
-        f"(max_age_days={max_age_days}, без даты/ошибкой: {skipped_no_date})"
+        f"(max_age_days={max_age_days}, проверено по дате: {with_date_checked}, "
+        f"без даты/ошибкой: {no_date_or_error}, они сохранены без фильтра)"
     )
     return res
 
@@ -456,13 +527,15 @@ SOURCES: Dict[str, Dict[str, Any]] = {
         "type": "html_upackunion",
         "base_url": "https://upackunion.ru/cat/stati/",
         "pages": 2,
-        "max_articles": 30,
+        "max_articles": 40,
         "name": "upackunion-stati",
     },
     "lesprominform-news": {
         "type": "html_lesprominform",
-        "base_url": "https://lesprominform.ru/",
-        "max_articles": 30,
+        # страница новостей/статей по тегу ЦБП
+        "base_url": "https://lesprominform.ru/relations.html?tag=888",
+        "pages": 3,          # сколько страниц листать
+        "max_articles": 80,  # общий лимит по статьям
         "name": "lesprominform-news",
     },
 }
@@ -490,14 +563,12 @@ def collect_from_all_sources(max_age_days: int) -> List[NewsItem]:
         print("[service] После тематического фильтра ничего не осталось.")
         return []
 
-    if max_age_days >= 0:
-        thematic = filter_by_date(thematic, max_age_days)
-    else:
-        print("[service] Фильтр по дате отключён (max_age_days < 0).")
+    thematic = filter_by_date(thematic, max_age_days)
 
     if not thematic:
         print(
-            "[service] Все тематические новости оказались старше порога или без корректной даты. "
+            "[service] Все тематические новости с датой оказались старше порога. "
+            "Новости без даты сохранены, но их может быть мало. "
             "Можешь указать --max-age-days -1, чтобы убрать фильтр по дате."
         )
     return thematic
@@ -546,6 +617,37 @@ def cmd_export(args: argparse.Namespace) -> None:
                 row = {k: it.get(k, "") for k in fieldnames}
                 writer.writerow(row)
         print(f"[main] Экспортировано {len(items)} новостей в {args.output} (CSV)")
+    elif args.format == "xlsx":
+        try:
+            from openpyxl import Workbook
+        except ImportError:
+            print(
+                "[main] Для экспорта в Excel (.xlsx) нужен пакет openpyxl.\n"
+                "Установите командой:\n"
+                "    pip install openpyxl"
+            )
+            return
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "News"
+
+        headers = ["source", "title", "url", "published", "published_raw", "summary"]
+        ws.append(headers)
+
+        for it in items:
+            ws.append([
+                it.get("source", ""),
+                it.get("title", ""),
+                it.get("url", ""),
+                it.get("published", ""),
+                it.get("published_raw", ""),
+                it.get("summary", ""),
+            ])
+
+        wb.save(args.output)
+        print(f"[main] Экспортировано {len(items)} новостей в {args.output} (XLSX)")
+
     else:
         print(f"[main] Неизвестный формат экспорта: {args.format}")
 
@@ -578,12 +680,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     p_list.set_defaults(func=cmd_list)
 
-    p_export = sub.add_parser("export", help="экспорт новостей в JSON/CSV")
+    p_export = sub.add_parser("export", help="экспорт новостей в JSON/CSV/XLSX")
     p_export.add_argument(
         "--format",
-        choices=["json", "csv"],
+        choices=["json", "csv", "xlsx"],
         default="json",
-        help="формат экспорта (json или csv, по умолчанию json)",
+        help="формат экспорта (json, csv или xlsx, по умолчанию json)",
     )
     p_export.add_argument(
         "--output",
