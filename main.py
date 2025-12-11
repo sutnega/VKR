@@ -705,3 +705,9 @@ def main(argv: Optional[List[str]] = None) -> None:
 
 if __name__ == "__main__":
     main()
+
+"""python main.py export --format xlsx --output news.xlsx
+
+ python main.py list -v     
+  python main.py collect     
+"""
