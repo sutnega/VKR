@@ -1,38 +1,5 @@
 #!/usr/bin/env python3
-"""
-summarize.py — модуль автоматического резюмирования новостей.
 
-Поддерживает три провайдера (переключение через --provider):
-  • gemini   — Google Gemini API (бесплатно, 1500 запросов/день)
-  • groq     — Groq API (бесплатно, ~14 400 запросов/день)
-  • openai   — OpenAI API (платно, ~$0.05 за 500 новостей)
-  • ollama   — локальная модель без интернета (полностью бесплатно)
-
-Быстрый старт:
-    # Gemini (рекомендуется — бесплатно)
-    export GEMINI_API_KEY="AIza..."
-    python summarize.py --provider gemini
-
-    # Groq (бесплатно)
-    export GROQ_API_KEY="gsk_..."
-    python summarize.py --provider groq
-
-    # Ollama (локально, без ключа)
-    python summarize.py --provider ollama
-
-    # OpenAI (платно)
-    export OPENAI_API_KEY="sk-..."
-    python summarize.py --provider openai
-
-Дополнительные флаги:
-    --limit 20       не более 20 новостей за запуск
-    --force          перезаписать уже существующие резюме
-    --dry-run        показать список без вызовов API
-    --store path     путь к хранилищу (по умолчанию news_store.json)
-    --model name     переопределить модель провайдера
-"""
-
-#!/usr/bin/env python3
 """
 summarize.py — модуль автоматического резюмирования новостей.
 
