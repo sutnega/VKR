@@ -7,7 +7,7 @@ from collections import Counter, defaultdict
 from typing import List, Dict, Any
 
 
-# очень простые stop-слова (можно потом расширить/подредактировать под себя)
+# stop-слова
 STOPWORDS = {
     # русские
     "и", "в", "во", "на", "по", "из", "от", "до", "за", "для", "над", "под",

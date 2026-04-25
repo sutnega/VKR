@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-
 """
 summarize.py — модуль автоматического резюмирования новостей.
 
@@ -53,7 +52,7 @@ MIN_SUMMARY_LENGTH = 80
 REQUEST_DELAY = 1.0
 
 # Таймаут HTTP-запроса (сек)
-REQUEST_TIMEOUT = 30
+REQUEST_TIMEOUT = 120
 
 # ---------------------------------------------------------------------------
 # Конфигурация провайдеров
@@ -167,7 +166,7 @@ def call_ollama(title: str, summary: Optional[str], model: str) -> str:
         "model": model,
         "prompt": f"{SYSTEM_PROMPT}\n\n{user_text}",
         "stream": False,
-        "options": {"temperature": 0.3, "num_predict": 300},
+        "options": {"temperature": 0.3, "num_predict": 600},
     }
     result = http_post(
         "http://localhost:11434/api/generate",
@@ -194,7 +193,7 @@ def _call_openai_compatible(
     """Общая логика для OpenAI-совместимых API (OpenAI и Groq используют один формат)."""
     payload = {
         "model": model,
-        "max_tokens": 300,
+        "max_tokens": 600,
         "temperature": 0.3,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -242,12 +241,24 @@ def call_provider(
 # Основная логика
 # ---------------------------------------------------------------------------
 
-def needs_summary(item: Dict[str, Any], force: bool) -> bool:
+def is_truncated(text: str) -> bool:
+    """Проверяет, выглядит ли текст обрезанным — не заканчивается на знак препинания."""
+    t = text.strip()
+    if not t:
+        return False
+    return t[-1] not in (".","!","?","»")
+
+
+def needs_summary(item: Dict[str, Any], force: bool, fix_truncated: bool = False) -> bool:
     """Возвращает True, если новость нуждается в резюмировании."""
     if force:
         return True
     s = item.get("summary") or ""
-    return len(s.strip()) < MIN_SUMMARY_LENGTH
+    if len(s.strip()) < MIN_SUMMARY_LENGTH:
+        return True
+    if fix_truncated and is_truncated(s):
+        return True
+    return False
 
 
 def run(
@@ -257,6 +268,7 @@ def run(
     force: bool,
     dry_run: bool,
     model: Optional[str],
+    fix_truncated: bool = False,
 ) -> None:
     cfg = PROVIDER_DEFAULTS[provider]
     active_model = model or cfg["model"]
@@ -277,7 +289,7 @@ def run(
 
     store = load_store(store_path)
     items: List[Dict[str, Any]] = store.get("items", [])
-    to_process = [it for it in items if needs_summary(it, force)]
+    to_process = [it for it in items if needs_summary(it, force, fix_truncated)]
 
     print(f"[summarize] Всего новостей     : {len(items)}")
     print(f"[summarize] Нуждаются в резюме : {len(to_process)}")
@@ -374,6 +386,11 @@ def main() -> None:
         action="store_true",
         help="Показать список без реальных запросов к API",
     )
+    parser.add_argument(
+        "--fix-truncated",
+        action="store_true",
+        help="Перегенерировать резюме которые выглядят обрезанными (не заканчиваются на точку/!/?)",
+    )
 
     args = parser.parse_args()
     run(
@@ -383,6 +400,7 @@ def main() -> None:
         force=args.force,
         dry_run=args.dry_run,
         model=args.model,
+        fix_truncated=args.fix_truncated,
     )
 
 
