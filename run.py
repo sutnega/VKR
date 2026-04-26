@@ -106,13 +106,32 @@ def menu_summarize() -> None:
     print(BOLD("  🤖 AI-резюмирование новостей"))
     print()
     print(f"  Провайдеры:")
-    print(f"    {GREEN('1')} gemini  — Google Gemini API {YELLOW('(бесплатно, нужен ключ GEMINI_API_KEY)')}")
-    print(f"    {GREEN('2')} groq    — Groq API          {YELLOW('(бесплатно, нужен ключ GROQ_API_KEY)')}")
-    print(f"    {GREEN('3')} ollama  — локальная модель  {GREEN('(полностью бесплатно, без ключа)')}")
+    print(f"    {GREEN('1')} gigachat — GigaChat (Сбер)   {GREEN('(бесплатно, лучший русский, нужен ключ GIGACHAT_CREDENTIALS)')}")
+    print(f"    {GREEN('2')} gemini   — Google Gemini API  {YELLOW('(бесплатно, нужен ключ GEMINI_API_KEY)')}")
+    print(f"    {GREEN('3')} groq     — Groq API           {YELLOW('(бесплатно, нужен ключ GROQ_API_KEY)')}")
+    print(f"    {GREEN('4')} ollama   — локальная модель   {GREEN('(полностью бесплатно, без ключа)')}")
     print()
-    choice = ask("Выберите провайдер (1/2/3)", "3")
-    provider_map = {"1": "gemini", "2": "groq", "3": "ollama"}
-    provider = provider_map.get(choice, "ollama")
+    choice = ask("Выберите провайдер (1/2/3/4)", "1")
+    provider_map = {"1": "gigachat", "2": "gemini", "3": "groq", "4": "ollama"}
+    provider = provider_map.get(choice, "gigachat")
+
+    # Проверяем ключи и предлагаем ввести если не заданы
+    key_env_map = {
+        "gigachat": "GIGACHAT_CREDENTIALS",
+        "gemini":   "GEMINI_API_KEY",
+        "groq":     "GROQ_API_KEY",
+    }
+    if provider in key_env_map:
+        env_var = key_env_map[provider]
+        if not os.environ.get(env_var):
+            print()
+            print(YELLOW(f"  Переменная {env_var} не задана."))
+            key_val = ask(f"Введите ключ (или Enter чтобы пропустить)", "")
+            if key_val:
+                os.environ[env_var] = key_val
+                print(GREEN(f"  ✓ {env_var} установлен на время сессии"))
+            else:
+                print(RED("  Ключ не введён — запуск может завершиться ошибкой."))
 
     limit = ask_int("Сколько новостей обработать за раз (0 = все)", 0)
     store = ask("Файл хранилища", "news_store.json")
@@ -137,6 +156,46 @@ def menu_summarize() -> None:
     pause()
 
 
+def _find_free_port(start: int = 8501) -> int:
+    """Ищет свободный порт начиная с start."""
+    import socket
+    for port in range(start, start + 20):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind(("127.0.0.1", port))
+                return port
+            except OSError:
+                continue
+    return start  # fallback
+
+
+def _kill_port(port: int) -> None:
+    """Завершает процесс занимающий порт (Windows/Linux)."""
+    import socket
+    # Проверяем что порт реально занят
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        if s.connect_ex(("127.0.0.1", port)) != 0:
+            return  # порт свободен
+    if os.name == "nt":
+        # Windows: найти PID через netstat и убить
+        import subprocess as sp
+        result = sp.run(
+            ["netstat", "-ano"],
+            capture_output=True, text=True
+        )
+        for line in result.stdout.splitlines():
+            if f":{port}" in line and "LISTENING" in line:
+                parts = line.split()
+                pid = parts[-1]
+                sp.run(["taskkill", "/PID", pid, "/F"], capture_output=True)
+                print(GREEN(f"  ✓ Завершён процесс PID {pid} на порту {port}"))
+                return
+    else:
+        import subprocess as sp
+        sp.run(["fuser", "-k", f"{port}/tcp"], capture_output=True)
+        print(GREEN(f"  ✓ Завершён процесс на порту {port}"))
+
+
 def menu_app() -> None:
     print()
     print(BOLD("  🌐 Запуск веб-интерфейса (Streamlit)"))
@@ -144,8 +203,20 @@ def menu_app() -> None:
     print(GRAY("  Для остановки нажмите Ctrl+C в этом окне."))
     print()
     app_file = ask("Файл приложения", "news_app.py")
-    port     = ask("Порт", "8501")
-    run([sys.executable, "-m", "streamlit", "run", app_file, "--server.port", port])
+    port_str = ask("Порт", "8501")
+    port = int(port_str)
+
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        port_busy = s.connect_ex(("127.0.0.1", port)) == 0
+
+    if port_busy:
+        print()
+        print(YELLOW(f"  ⚠ Порт {port} уже занят. Завершаю старый процесс..."))
+        _kill_port(port)
+        import time; time.sleep(1)
+
+    run([sys.executable, "-m", "streamlit", "run", app_file, "--server.port", str(port)])
     pause()
 
 
@@ -171,7 +242,7 @@ def menu_full_pipeline() -> None:
     print()
     store    = ask("Файл хранилища", "news_store.json")
     max_age  = ask_int("Максимальный возраст новостей (дней)", 365)
-    provider = ask("Провайдер AI (gemini/groq/ollama)", "ollama")
+    provider = ask("Провайдер AI (gigachat/gemini/groq/ollama)", "gigachat")
     limit    = ask_int("Лимит резюме за раз (0 = все)", 20)
 
     print()
