@@ -11,6 +11,24 @@ import subprocess
 import sys
 
 
+def _load_dotenv(path: str = ".env") -> None:
+    if not os.path.exists(path):
+        return
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = value
+
+
+_load_dotenv()
+
+
 # ─────────────────────────────────────────────
 # Цвета для терминала
 # ─────────────────────────────────────────────
@@ -267,6 +285,59 @@ def menu_full_pipeline() -> None:
 # Главное меню
 # ─────────────────────────────────────────────
 
+
+def menu_clean_store() -> None:
+    print()
+    print(BOLD("  🧹 Очистка HTML из хранилища"))
+    print(GRAY("  Убирает HTML-теги из полей summary (актуально для RSS-источников)."))
+    print()
+    store = ask("Файл хранилища", "news_store.json")
+
+    import re
+    from html import unescape
+
+    def strip_html(text):
+        if not text:
+            return text
+        text = re.sub(r"<br\s*/?>", "\n", text, flags=re.I)
+        text = re.sub(r"<[^>]+>", "", text)
+        text = unescape(text)
+        return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+    def looks_like_html(text):
+        return bool(re.search(r"<[a-zA-Z][^>]*>", text or ""))
+
+    import json, os
+    if not os.path.exists(store):
+        print(RED(f"  Файл не найден: {store}"))
+        pause()
+        return
+
+    with open(store, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    items = data.get("items", [])
+    cleaned = 0
+    for item in items:
+        summary = item.get("summary") or ""
+        if looks_like_html(summary):
+            clean = strip_html(summary)
+            if len(clean) > 600:
+                clean = clean[:600] + "…"
+            item["summary"] = clean
+            cleaned += 1
+
+    if cleaned == 0:
+        print(GREEN("  ✓ HTML не найден — хранилище уже чистое."))
+    else:
+        tmp = store + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, store)
+        print(GREEN(f"  ✓ Очищено записей: {cleaned} из {len(items)}"))
+
+    pause()
+
 MENU_ITEMS = [
     ("1", "📥  Собрать новости",                    menu_collect),
     ("2", "📋  Показать список новостей",            menu_list),
@@ -274,7 +345,8 @@ MENU_ITEMS = [
     ("4", "🤖  AI-резюмирование",                   menu_summarize),
     ("5", "📊  Частотный анализ слов",               menu_analyze),
     ("6", "🌐  Запустить веб-дашборд",               menu_app),
-    ("7", "🔄  Полный цикл (сбор → резюме → дашборд)", menu_full_pipeline),
+    ("7", "🧹  Очистить HTML в хранилище",             menu_clean_store),
+    ("8", "🔄  Полный цикл (сбор → резюме → дашборд)", menu_full_pipeline),
     ("0", "❌  Выход",                               None),
 ]
 

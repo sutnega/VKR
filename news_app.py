@@ -11,6 +11,25 @@ from datetime import datetime
 from collections import Counter
 from typing import List, Dict, Any, Optional
 
+
+def _load_dotenv(path: str = ".env") -> None:
+    """Загружает ключи из .env файла в переменные окружения."""
+    if not os.path.exists(path):
+        return
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = value
+
+
+_load_dotenv()
+
 import pandas as pd
 import streamlit as st
 
@@ -205,6 +224,165 @@ def generate_summary(provider: str, title: str, original: str, api_key: str = ""
         raise ValueError(f"Неизвестный провайдер: {provider}")
 
 
+
+# ─────────────────────────────────────────────
+# Страновая принадлежность источников
+# ─────────────────────────────────────────────
+
+SOURCE_COUNTRY = {
+    # Россия
+    "sbo-paper":          "Россия",
+    "rosinvest-bumles":   "Россия",
+    "upackunion-stati":   "Россия",
+    "lesprominform-news": "Россия",
+    # Индия
+    "paper-mart-india":       "Индия",
+    "thepackman-india":       "Индия",
+    "pulpandpapertimes-india": "Индия",
+    # Вьетнам (БРИКС+)
+    "paper-vietnam-news": "Вьетнам",
+    # Египет (БРИКС+)
+    "daily-news-egypt":   "Египет",
+    # Иран (БРИКС+)
+    "financial-tribune-iran": "Иран",
+    # ЮАР (БРИКС)
+    "the-paper-story":    "ЮАР",
+    # Глобальные / Европа
+    "tissueworldmagazine":    "Глобально",
+    "packaging-gateway":      "Глобально",
+    "papnews":                "Европа",
+    "packaging-europe":       "Европа",
+    "paper-technology-intl":  "Глобально",
+    "paperadvance":           "Канада/Глобально",
+    "paperage":               "США",
+    "pulpapernews":           "Европа",
+    "packaging-strategies":   "США",
+}
+
+COUNTRY_GROUPS = {
+    "🇷🇺 Россия":          ["Россия"],
+    "🇮🇳 Индия":           ["Индия"],
+    "🇧🇷 Бразилия":        ["Бразилия"],
+    "🇨🇳 Китай":           ["Китай"],
+    "🌍 БРИКС+ (другие)":  ["ЮАР", "Египет", "Иран", "Вьетнам", "Таиланд", "ОАЭ"],
+    "🌐 США / Канада":     ["США", "Канада/Глобально"],
+    "🇪🇺 Европа":          ["Европа"],
+    "🌏 Глобально":        ["Глобально"],
+}
+
+COUNTRY_COLORS = {
+    "🇷🇺 Россия":         "#CC0000",
+    "🇮🇳 Индия":          "#FF9933",
+    "🇧🇷 Бразилия":       "#009C3B",
+    "🇨🇳 Китай":          "#DE2910",
+    "🌍 БРИКС+ (другие)": "#8B5CF6",
+    "🌐 США / Канада":    "#3B82F6",
+    "🇪🇺 Европа":         "#003399",
+    "🌏 Глобально":       "#64748B",
+}
+
+COUNTRY_KW = {
+    "Россия":   ["россия", "российск", "рубл", "москв", "петербург", "сыктывкар",
+                 "архангельск", "светогорск", "кондопог", "илим", "монди", "russia", "russian"],
+    "Китай":    ["китай", "китайск", "china", "chinese", "beijing", "shanghai",
+                 "guangzhou", "shandong", "юань"],
+    "Индия":    ["india", "indian", "delhi", "mumbai", "rupee", "инди"],
+    "Бразилия": ["brazil", "brazilian", "brasilia", "бразили", "real"],
+    "Таиланд":  ["thailand", "thai", "bangkok", "таиланд"],
+    "Вьетнам":  ["vietnam", "vietnamese", "hanoi", "вьетнам"],
+    "ЮАР":      ["south africa", "johannesburg", "sappi", "юар"],
+    "Египет":   ["egypt", "egyptian", "cairo", "египет"],
+    "Иран":     ["iran", "iranian", "tehran", "иран"],
+}
+
+
+def detect_country(row) -> str:
+    """Определяет страну новости: сначала по источнику, потом по тексту."""
+    # 1. По источнику
+    src_country = SOURCE_COUNTRY.get(row.get("source", ""), "")
+    if src_country:
+        return src_country
+    # 2. По тексту (заголовок + резюме)
+    text = " ".join([
+        str(row.get("title", "") or ""),
+        str(row.get("summary", "") or ""),
+    ]).lower()
+    for country, keywords in COUNTRY_KW.items():
+        if any(kw in text for kw in keywords):
+            return country
+    return "Глобально"
+
+
+def get_group(country: str) -> str:
+    """Возвращает группу БРИКС для страны."""
+    for group, countries in COUNTRY_GROUPS.items():
+        if country in countries:
+            return group
+    return "🌏 Глобально"
+
+
+# ─────────────────────────────────────────────
+# Сегменты отрасли
+# ─────────────────────────────────────────────
+
+SEGMENTS: dict = {
+    "Pulp / Целлюлоза":         ["pulp", "целлюлоз", "pulping", "kraft pulp", "dissolving pulp",
+                                  "softwood pulp", "hardwood pulp", "bleached pulp"],
+    "Paper / Бумага":           ["paper machine", "paper mill", "newsprint", "бумажн", "бумага",
+                                  "fine paper", "graphic paper", "copy paper", "офсет"],
+    "Paperboard / Картон":      ["paperboard", "board machine", "картон", "cartonboard",
+                                  "solid board", "folding boxboard", "fbb", "грейбор"],
+    "Cardboard / Гофро":        ["cardboard", "corrugated", "гофрокартон", "гофро", "kraftliner",
+                                  "containerboard", "fluting", "testliner", "schrenz"],
+    "Packaging / Упаковка":     ["packaging", "упаковк", "package", "пакет", "bag", "sachet",
+                                  "flexible packaging", "rigid packaging", "pouch"],
+    "Tissue / Тиссью":          ["tissue", "тиссью", "туалетн", "салфетк", "towel", "hygiene",
+                                  "санитарно-гигиен", "facial tissue", "bathroom tissue"],
+    "Molded Fiber":             ["molded fiber", "molded pulp", "формован", "яичн лоток",
+                                  "bagasse", "fiber tray"],
+    "Recycled Fiber / Макулатура": ["recycled fiber", "recovered paper", "waste paper", "макулатур",
+                                    "deinking", "деинкинг", "secondary fiber", "occ"],
+    "Nanocellulose / Нано":     ["nanocellulose", "nfc", "cnf", "cnc", "cellulose nanofiber",
+                                  "nanofibril", "microfibrillated", "mfc", "наноцеллюлоз"],
+    "Biorefinery / Биорафинад": ["biorefinery", "biorefining", "биорафинад", "lignin",
+                                  "лигнин", "hemicellulose", "tall oil", "биоэкономик"],
+    "Barrier & Coating":        ["barrier coating", "pfas-free", "pfas free", "without pfas",
+                                  "barrier paper", "repulpable", "recyclable barrier",
+                                  "water resistance", "grease resistant", "покрыти"],
+}
+
+SEGMENT_COLORS: dict = {
+    "Pulp / Целлюлоза":            "#8B4513",
+    "Paper / Бумага":              "#4A90D9",
+    "Paperboard / Картон":         "#7B68EE",
+    "Cardboard / Гофро":           "#D2691E",
+    "Packaging / Упаковка":        "#2E8B57",
+    "Tissue / Тиссью":             "#FF69B4",
+    "Molded Fiber":                "#6B8E23",
+    "Recycled Fiber / Макулатура": "#708090",
+    "Nanocellulose / Нано":        "#00CED1",
+    "Biorefinery / Биорафинад":    "#228B22",
+    "Barrier & Coating":           "#FF8C00",
+}
+
+
+def detect_segments(row) -> list:
+    """Возвращает список сегментов для новости (может быть несколько)."""
+    text = " ".join([
+        str(row.get("title", "") or ""),
+        str(row.get("summary", "") or ""),
+    ]).lower()
+    found = []
+    for segment, keywords in SEGMENTS.items():
+        if any(kw in text for kw in keywords):
+            found.append(segment)
+    return found if found else ["Другое"]
+
+
+def detect_segment_primary(row) -> str:
+    """Возвращает основной (первый найденный) сегмент."""
+    return detect_segments(row)[0]
+
 # ─────────────────────────────────────────────
 # DataFrame
 # ─────────────────────────────────────────────
@@ -238,6 +416,10 @@ def build_dataframe(items: List[Dict[str, Any]]) -> pd.DataFrame:
     df["published_dt"] = pd.to_datetime(df["published"].apply(parse_dt), utc=True, errors="coerce")
     df["has_summary"] = df["summary"].apply(lambda x: bool(x and len(str(x).strip()) > 50))
     df["source_label"] = df["source"].map(SOURCE_LABELS).fillna(df["source"])
+    df["country"] = df.apply(detect_country, axis=1)
+    df["country_group"] = df["country"].apply(get_group)
+    df["segment"] = df.apply(detect_segment_primary, axis=1)
+    df["segments_all"] = df.apply(detect_segments, axis=1)
     for col in ["summary_provider", "summary_model"]:
         if col not in df.columns:
             df[col] = ""
@@ -349,12 +531,13 @@ def show_full_card(row: pd.Series, store_path: str):
             default_key = os.environ.get(env_var, "") if env_var else ""
             api_key_input = ""
             if needs_key:
+                # key включает prov_choice чтобы поле пересоздавалось при смене провайдера
                 api_key_input = st.text_input(
                     f"Ключ ({env_var})",
                     value=default_key,
                     type="password",
-                    key=f"key_{news_id}",
-                    help=f"Будет использован ключ из переменной окружения {env_var} если поле пустое",
+                    key=f"key_{news_id}_{prov_choice}",
+                    help=f"Автоматически подставлен из {env_var}" if default_key else f"Введите {env_var}",
                 )
                 if not api_key_input:
                     api_key_input = default_key
@@ -520,6 +703,26 @@ def main():
         search_query = st.text_input("Поиск по тексту", placeholder="введите слово...")
         only_with_summary = st.checkbox("Только с AI-резюме", value=False)
 
+        # Фильтр по нейросети-автору резюме
+        available_providers = sorted([
+            p for p in df["summary_provider"].unique() if p and str(p).strip()
+        ])
+        chosen_providers = []
+        if available_providers:
+            provider_labels = {
+                "gigachat": "🟢 GigaChat",
+                "gemini":   "🔵 Gemini",
+                "groq":     "🔴 Groq",
+                "ollama":   "🟣 Ollama",
+            }
+            chosen_providers = st.multiselect(
+                "Нейросеть резюме",
+                options=available_providers,
+                default=[],
+                format_func=lambda x: provider_labels.get(x, x),
+                placeholder="Все нейросети...",
+            )
+
         min_dt = df["published_dt"].min()
         max_dt = df["published_dt"].max()
         use_date = False
@@ -544,6 +747,8 @@ def main():
         filtered = filtered[filtered["source"].isin(chosen_sources)]
     if only_with_summary:
         filtered = filtered[filtered["has_summary"]]
+    if chosen_providers:
+        filtered = filtered[filtered["summary_provider"].isin(chosen_providers)]
     if search_query.strip():
         q = search_query.strip().lower()
         filtered = filtered[
@@ -573,7 +778,7 @@ def main():
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    tab1, tab2, tab3 = st.tabs(["📋 Новости", "📈 Аналитика", "☁️ Частотный анализ"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📋 Новости", "📈 Аналитика", "☁️ Частотный анализ", "🌍 По странам", "🏭 По сегментам"])
 
     # ════════════════════════════════════════
     # ВКЛАДКА 1
@@ -588,7 +793,7 @@ def main():
             show_cols = ["source_label", "published_raw", "title", "url", "has_summary", "summary_provider"]
             rename_map = {"source_label": "Источник", "published_raw": "Дата", "title": "Заголовок",
                           "url": "Ссылка", "has_summary": "Резюме", "summary_provider": "Нейросеть"}
-            st.dataframe(filtered[show_cols].rename(columns=rename_map), use_container_width=True, height=400)
+            st.dataframe(filtered[show_cols].rename(columns=rename_map), width="stretch", height=400)
             st.markdown("#### Открыть карточку")
             chosen_title = st.selectbox("Выберите новость", ["— не выбрано —"] + filtered["title"].tolist())
             if chosen_title != "— не выбрано —":
@@ -622,7 +827,7 @@ def main():
                 st.markdown("##### Покрытие AI-резюме по источникам")
                 cov = filtered.groupby("source_label")["has_summary"].agg(["sum", "count"]).rename(columns={"sum": "С резюме", "count": "Всего"})
                 cov["% покрытия"] = (cov["С резюме"] / cov["Всего"] * 100).round(1)
-                st.dataframe(cov, use_container_width=True)
+                st.dataframe(cov, width="stretch")
 
             if filtered["published_dt"].notna().any():
                 st.markdown("##### Динамика публикаций по месяцам")
@@ -642,14 +847,14 @@ def main():
                 if len(prov_df):
                     col_p1, col_p2 = st.columns([1, 2])
                     with col_p1:
-                        st.dataframe(prov_df, use_container_width=True, hide_index=True)
+                        st.dataframe(prov_df, width="stretch", hide_index=True)
                     with col_p2:
                         st.bar_chart(prov_df.set_index("Провайдер"))
 
             no_summary = filtered[~filtered["has_summary"]][["source_label", "title"]]
             if len(no_summary):
                 with st.expander(f"📭 Новости без резюме ({len(no_summary)} шт.)"):
-                    st.dataframe(no_summary.rename(columns={"source_label": "Источник", "title": "Заголовок"}), use_container_width=True)
+                    st.dataframe(no_summary.rename(columns={"source_label": "Источник", "title": "Заголовок"}), width="stretch")
 
     # ════════════════════════════════════════
     # ВКЛАДКА 3
@@ -667,7 +872,7 @@ def main():
                 col_a, col_b = st.columns([1, 2])
                 with col_a:
                     st.markdown("##### Таблица топ-слов")
-                    st.dataframe(freq_df, use_container_width=True, height=450)
+                    st.dataframe(freq_df, width="stretch", height=450)
                 with col_b:
                     st.markdown("##### Частота упоминаний")
                     st.bar_chart(freq_df.set_index("Слово"))
@@ -682,8 +887,184 @@ def main():
                             with src_cols[i % len(src_cols)]:
                                 clr = SOURCE_COLORS.get(src, "#4a9eff")
                                 st.markdown(f"<span style='color:{clr}; font-weight:600;'>{SOURCE_LABELS.get(src, src)}</span>", unsafe_allow_html=True)
-                                st.dataframe(pd.DataFrame(top_src, columns=["Слово", "Частота"]), use_container_width=True, height=350)
+                                st.dataframe(pd.DataFrame(top_src, columns=["Слово", "Частота"]), width="stretch", height=350)
 
+
+    # ════════════════════════════════════════
+    # ВКЛАДКА 4 — По странам (БРИКС)
+    # ════════════════════════════════════════
+    with tab4:
+        if total == 0:
+            st.info("Нет данных.")
+        else:
+            # ── Метрики по группам ──
+            st.markdown("##### Распределение новостей по регионам")
+            group_counts = filtered["country_group"].value_counts().reset_index()
+            group_counts.columns = ["Регион", "Новостей"]
+
+            col_gc1, col_gc2 = st.columns([1, 2])
+            with col_gc1:
+                st.dataframe(group_counts, width="stretch", hide_index=True)
+            with col_gc2:
+                st.bar_chart(group_counts.set_index("Регион"))
+
+            st.markdown("---")
+
+            # ── Вкладки по группам ──
+            groups_present = [g for g in COUNTRY_GROUPS if g in filtered["country_group"].values]
+            if not groups_present:
+                st.info("Нет данных по странам.")
+            else:
+                group_tabs = st.tabs(groups_present)
+                for gtab, group_name in zip(group_tabs, groups_present):
+                    with gtab:
+                        group_df = filtered[filtered["country_group"] == group_name]
+                        gcolor = COUNTRY_COLORS.get(group_name, "#64748B")
+
+                        # Метрики группы
+                        g_total = len(group_df)
+                        g_with_sum = int(group_df["has_summary"].sum())
+                        gc1, gc2, gc3 = st.columns(3)
+                        for col, val, lbl in [
+                            (gc1, g_total, "Новостей"),
+                            (gc2, group_df["source"].nunique(), "Источников"),
+                            (gc3, g_with_sum, "С резюме"),
+                        ]:
+                            col.markdown(
+                                f'<div class="metric-card"><div class="metric-value" '
+                                f'style="color:{gcolor};">{val}</div>'
+                                f'<div class="metric-label">{lbl}</div></div>',
+                                unsafe_allow_html=True
+                            )
+                        st.markdown("<br>", unsafe_allow_html=True)
+
+                        if g_total == 0:
+                            st.info("Нет новостей для этого региона.")
+                            continue
+
+                        # Разбивка по странам внутри группы
+                        countries_in_group = group_df["country"].value_counts()
+                        if len(countries_in_group) > 1:
+                            st.markdown("**По странам:**")
+                            st.bar_chart(countries_in_group)
+
+                        # Разбивка по источникам
+                        st.markdown("**По источникам:**")
+                        src_counts = group_df.groupby("source_label").size().rename("Новостей")
+                        st.bar_chart(src_counts)
+
+                        # Топ слов
+                        top_words_g = compute_word_freq(group_df).most_common(20)
+                        if top_words_g:
+                            st.markdown("**Топ-20 слов:**")
+                            wdf = pd.DataFrame(top_words_g, columns=["Слово", "Частота"])
+                            st.bar_chart(wdf.set_index("Слово"))
+
+                        # Список новостей
+                        with st.expander(f"📋 Все новости региона ({g_total} шт.)"):
+                            show = group_df[["source_label", "published_raw", "title", "country", "url"]].rename(columns={
+                                "source_label": "Источник", "published_raw": "Дата",
+                                "title": "Заголовок", "country": "Страна", "url": "Ссылка"
+                            })
+                            st.dataframe(show, width="stretch")
+
+
+
+    # ════════════════════════════════════════
+    # ВКЛАДКА 5 — По сегментам отрасли
+    # ════════════════════════════════════════
+    with tab5:
+        if total == 0:
+            st.info("Нет данных.")
+        else:
+            # ── Общее распределение по сегментам ──
+            st.markdown("##### Распределение новостей по сегментам отрасли")
+
+            # Разворачиваем списки segments_all для подсчёта
+            seg_counts: dict = {}
+            for segs in filtered["segments_all"]:
+                for s in segs:
+                    seg_counts[s] = seg_counts.get(s, 0) + 1
+
+            seg_df = (
+                pd.DataFrame(list(seg_counts.items()), columns=["Сегмент", "Новостей"])
+                .sort_values("Новостей", ascending=False)
+                .reset_index(drop=True)
+            )
+
+            col_s1, col_s2 = st.columns([1, 2])
+            with col_s1:
+                st.dataframe(seg_df, width="stretch", hide_index=True)
+            with col_s2:
+                st.bar_chart(seg_df.set_index("Сегмент"))
+
+            st.markdown("---")
+
+            # ── Детализация по каждому сегменту ──
+            segments_present = [s for s in SEGMENTS if s in seg_counts]
+            if "Другое" in seg_counts:
+                segments_present.append("Другое")
+
+            if segments_present:
+                chosen_seg = st.selectbox(
+                    "Выберите сегмент для детализации",
+                    options=segments_present,
+                    format_func=lambda x: f"{x}  ({seg_counts.get(x, 0)} новостей)",
+                )
+
+                seg_color = SEGMENT_COLORS.get(chosen_seg, "#4a9eff")
+                seg_filtered = filtered[filtered["segments_all"].apply(lambda s: chosen_seg in s)]
+
+                # Метрики сегмента
+                sm1, sm2, sm3 = st.columns(3)
+                for col, val, lbl in [
+                    (sm1, len(seg_filtered), "Новостей"),
+                    (sm2, seg_filtered["source"].nunique(), "Источников"),
+                    (sm3, int(seg_filtered["has_summary"].sum()), "С резюме"),
+                ]:
+                    col.markdown(
+                        f'<div class="metric-card"><div class="metric-value" '
+                        f'style="color:{seg_color};">{val}</div>'
+                        f'<div class="metric-label">{lbl}</div></div>',
+                        unsafe_allow_html=True
+                    )
+                st.markdown("<br>", unsafe_allow_html=True)
+
+                col_sl, col_sr = st.columns(2)
+                with col_sl:
+                    st.markdown("**По источникам:**")
+                    src_s = seg_filtered.groupby("source_label").size().rename("Новостей").sort_values(ascending=False)
+                    st.bar_chart(src_s)
+                with col_sr:
+                    st.markdown("**По странам:**")
+                    ctr_s = seg_filtered.groupby("country").size().rename("Новостей").sort_values(ascending=False)
+                    st.bar_chart(ctr_s)
+
+                # Топ слов сегмента
+                top_seg_words = compute_word_freq(seg_filtered).most_common(20)
+                if top_seg_words:
+                    st.markdown("**Топ-20 слов сегмента:**")
+                    st.bar_chart(pd.DataFrame(top_seg_words, columns=["Слово", "Частота"]).set_index("Слово"))
+
+                # Список новостей сегмента
+                with st.expander(f"📋 Все новости сегмента «{chosen_seg}» ({len(seg_filtered)} шт.)"):
+                    show_seg = seg_filtered[["source_label", "published_raw", "title", "country", "url"]].rename(columns={
+                        "source_label": "Источник", "published_raw": "Дата",
+                        "title": "Заголовок", "country": "Страна", "url": "Ссылка",
+                    })
+                    st.dataframe(show_seg, width="stretch")
+
+            # ── Матрица сегмент × страна ──
+            st.markdown("---")
+            st.markdown("##### Матрица: сегменты × страны")
+            matrix_data = []
+            for _, row in filtered.iterrows():
+                for seg in row["segments_all"]:
+                    matrix_data.append({"Сегмент": seg, "Страна": row["country"]})
+            if matrix_data:
+                matrix_df = pd.DataFrame(matrix_data)
+                pivot = matrix_df.groupby(["Сегмент", "Страна"]).size().unstack(fill_value=0)
+                st.dataframe(pivot, width="stretch")
 
 if __name__ == "__main__":
     main()

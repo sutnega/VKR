@@ -64,11 +64,16 @@ def add_items_to_store(store: StoreType, items: List[NewsItem]) -> int:
 USER_AGENT = "Mozilla/5.0 (compatible; VKR-news-bot/1.0; +https://example.com)"
 
 
-def http_get(url: str, timeout: int = 20) -> str:
+def http_get(url: str, timeout: int = 20, skip_ssl: bool = False) -> str:
+    import ssl
     req = Request(url, headers={"User-Agent": USER_AGENT})
-    with urlopen(req, timeout=timeout) as resp:
+    ctx = None
+    if skip_ssl:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    with urlopen(req, timeout=timeout, context=ctx) as resp:
         data = resp.read()
-    # Try decode as utf-8, fallback to cp1251
     try:
         return data.decode("utf-8")
     except UnicodeDecodeError:
@@ -105,9 +110,10 @@ def parse_rss_datetime(text: str) -> Optional[dt.datetime]:
 def fetch_rss_source(name: str, cfg: Dict[str, Any]) -> List[NewsItem]:
     url = cfg["url"]
     print(f"[collector] Читаю RSS '{name}' из {url} ...")
+    skip_ssl = cfg.get("skip_ssl", False)
     try:
-        xml_text = http_get(url)
-    except (HTTPError, URLError) as e:
+        xml_text = http_get(url, skip_ssl=skip_ssl)
+    except Exception as e:
         print(f"[collector]   ошибка при чтении {url}: {e}")
         return []
     try:
@@ -141,6 +147,12 @@ def fetch_rss_source(name: str, cfg: Dict[str, Any]) -> List[NewsItem]:
 
         nid = f"{name}:{link}"
 
+        # Чистим HTML из описания: strip_html убирает теги, unescape декодирует entities
+        clean_desc = strip_html(desc) if desc else None
+        # Обрезаем до 600 символов чтобы не хранить огромные тексты
+        if clean_desc and len(clean_desc) > 600:
+            clean_desc = clean_desc[:600] + "…"
+
         items.append(
             NewsItem(
                 id=nid,
@@ -149,7 +161,7 @@ def fetch_rss_source(name: str, cfg: Dict[str, Any]) -> List[NewsItem]:
                 url=link,
                 published=pub_iso,
                 published_raw=pub_raw or None,
-                summary=unescape(desc) if desc else None,
+                summary=clean_desc,
             )
         )
 
@@ -237,9 +249,9 @@ def fetch_upackunion_articles(cfg: Dict[str, Any]) -> List[NewsItem]:
 
         # выделяем каждый <article class="... mg-posts-sec-post ...">
         for m_art in re.finditer(
-            r'<article[^>]*class="[^"]*mg-posts-sec-post[^"]*"[^>]*>(.*?)</article>',
-            html,
-            flags=re.S | re.I,
+                r'<article[^>]*class="[^"]*mg-posts-sec-post[^"]*"[^>]*>(.*?)</article>',
+                html,
+                flags=re.S | re.I,
         ):
             block = m_art.group(1)
 
@@ -346,9 +358,9 @@ def fetch_lesprominform_news(cfg: Dict[str, Any]) -> List[NewsItem]:
 
         # для каждой статьи/новости
         for m_art in re.finditer(
-            r'<article[^>]*class="[^"]*news teaser[^"]*"[^>]*>(.*?)</article>',
-            html,
-            flags=re.S | re.I,
+                r'<article[^>]*class="[^"]*news teaser[^"]*"[^>]*>(.*?)</article>',
+                html,
+                flags=re.S | re.I,
         ):
             block = m_art.group(1)
 
@@ -426,16 +438,24 @@ NARROW_SOURCES = {
     "rosinvest-bumles",
     "upackunion-stati",
     "lesprominform-news",
-    # Новые — тематика ЦБП/упаковки гарантирована
+    # Глобальные профильные (добавлены ранее)
     "tissueworldmagazine",
     "packaging-gateway",
     "papnews",
-    "pulpandpaper-technology",
     "packaging-europe",
-    "nonwovens-industry",
-    "toscotec",
-    "sappi-news",
     "the-paper-story",
+    # Технологии и оборудование
+    "paper-technology-intl",
+    # Наука и материалы
+    # Региональные профильные
+    "paper-mart-india",
+    "paper-vietnam-news",
+    # Новые глобальные профильные
+    "paperadvance",
+    "paperage",
+    "pulpapernews",
+    "thepackman-india",
+    "pulpandpapertimes-india",
 }
 
 
@@ -529,49 +549,30 @@ SOURCES: Dict[str, Dict[str, Any]] = {
         "type": "rss",
         "url": "https://rosinvest.com/newsrubrik_7.rss",
     },
-    # ── Новые глобальные RSS-источники ──────────────────────────────
+    # ── Глобальные профильные (ЦБП/упаковка) ────────────────────
     "tissueworldmagazine": {
         "type": "rss",
         "url": "https://www.tissueworldmagazine.com/feed/",
     },
     "packaging-gateway": {
         "type": "rss",
-        "url": "https://www.packaging-gateway.com/feed/",
+        "url": "https://www.packaging-gateway.com/news/feed/",
     },
     "papnews": {
         "type": "rss",
         "url": "https://www.papnews.com/feed/",
     },
-    "pulpandpaper-technology": {
-        "type": "rss",
-        "url": "https://www.pulpandpaper-technology.com/feed/",
-    },
     "packaging-europe": {
         "type": "rss",
-        "url": "https://packagingeurope.com/rss",
-    },
-    "nonwovens-industry": {
-        "type": "rss",
-        "url": "https://www.nonwovens-industry.com/feed/",
-    },
-    "toscotec": {
-        "type": "rss",
-        "url": "https://www.toscotec.com/feed/",
-    },
-    "sappi-news": {
-        "type": "rss",
-        "url": "https://www.sappi.com/news/feed/",
+        "url": "https://packagingeurope.com/5.rss",
     },
     "the-paper-story": {
         "type": "rss",
-        "url": "https://thepaperstory.co.za/news/feed/",
-    },
-    "rbc": {
-        "type": "rss",
-        "url": "https://rssexport.rbc.ru/rbcnews/news/30/full.rss",
+        "url": "https://thepaperstory.co.za/feed/",
     },
     "upackunion-stati": {
         "type": "html_upackunion",
+        "skip_ssl": True,
         "base_url": "https://upackunion.ru/cat/stati/",
         "pages": 2,
         "max_articles": 40,
@@ -581,9 +582,60 @@ SOURCES: Dict[str, Dict[str, Any]] = {
         "type": "html_lesprominform",
         # страница новостей/статей по тегу ЦБП
         "base_url": "https://lesprominform.ru/relations.html?tag=888",
-        "pages": 3,          # сколько страниц листать
+        "pages": 3,  # сколько страниц листать
         "max_articles": 80,  # общий лимит по статьям
         "name": "lesprominform-news",
+    },
+    # ── Технологии и оборудование (профильные) ──────────────────
+    "paper-technology-intl": {
+        "type": "rss",
+        "url": "https://papertechnologyinternational.com/feed/",
+    },
+
+    # ── Наука и материалы (профильные) ──────────────────────────
+    # ── Региональные профильные ──────────────────────────────────
+    "paper-mart-india": {
+        "type": "rss",
+        "url": "https://papermart.in/feed/",
+    },
+    "paper-vietnam-news": {
+        "type": "rss",
+        "url": "https://paper-vietnam.com/category/news/feed/",
+    },
+
+    # ── Региональные общие (нужен тематический фильтр) ──────────
+    "daily-news-egypt": {
+        "type": "rss",
+        "url": "https://www.dailynewsegypt.com/feed/",
+    },
+    "financial-tribune-iran": {
+        "type": "rss",
+        "url": "http://financialtribune.com/feed/",
+    },
+    # ── Новые проверенные источники ─────────────────────────────
+    "paperadvance": {
+        "type": "rss",
+        "url": "https://www.paperadvance.com/feed/",
+    },
+    "paperage": {
+        "type": "rss",
+        "url": "https://www.paperage.com/feed/",
+    },
+    "pulpapernews": {
+        "type": "rss",
+        "url": "https://www.pulpapernews.com/feed/",
+    },
+    "thepackman-india": {
+        "type": "rss",
+        "url": "https://thepackman.in/feed/",
+    },
+    "packaging-strategies": {
+        "type": "rss",
+        "url": "https://www.packagingstrategies.com/rss/latest-news/",
+    },
+    "pulpandpapertimes-india": {
+        "type": "rss",
+        "url": "https://thepulpandpapertimes.com/feed/",
     },
 }
 

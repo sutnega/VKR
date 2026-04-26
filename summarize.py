@@ -38,6 +38,25 @@ import os
 import time
 from typing import Any, Dict, List, Optional
 
+
+def _load_dotenv(path: str = ".env") -> None:
+    """Загружает переменные окружения из .env файла если он существует."""
+    if not os.path.exists(path):
+        return
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key and key not in os.environ:  # не перезаписываем уже заданные
+                os.environ[key] = value
+
+
+_load_dotenv()
+
 # ---------------------------------------------------------------------------
 # Системный промпт (общий для всех провайдеров)
 # ---------------------------------------------------------------------------
@@ -56,6 +75,15 @@ MIN_SUMMARY_LENGTH = 80
 # Пауза между запросами (сек) — защита от превышения rate limit
 REQUEST_DELAY = 1.0
 
+# Задержка между запросами для каждого провайдера (сек)
+# Gemini Free: 15 req/min → минимум 4 сек между запросами
+PROVIDER_DELAY = {
+    "gemini":   4.5,   # 15 req/min лимит → ~4 сек с запасом
+    "groq":     1.0,   # щедрый лимит, 1 сек достаточно
+    "gigachat": 1.0,
+    "ollama":   0.0,   # локально, без ограничений
+}
+
 # Таймаут HTTP-запроса (сек)
 REQUEST_TIMEOUT = 120
 
@@ -70,7 +98,7 @@ PROVIDER_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "description": "Google Gemini API — бесплатно, 1500 запросов/день",
     },
     "groq": {
-        "model": "llama3-8b-8192",
+        "model": "llama-3.3-70b-versatile",
         "api_key_env": "GROQ_API_KEY",
         "description": "Groq API — бесплатно, ~14 400 запросов/день",
     },
@@ -108,20 +136,30 @@ def save_store(path: str, store: Dict[str, Any]) -> None:
 # HTTP-хелпер (без сторонних библиотек)
 # ---------------------------------------------------------------------------
 
-def http_post(url: str, payload: Dict, headers: Dict) -> Dict:
+def http_post(url: str, payload: Dict, headers: Dict, retries: int = 3) -> Dict:
     import urllib.request
     import urllib.error
 
     data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", errors="ignore")
-        raise RuntimeError(f"HTTP {e.code}: {body[:300]}")
-    except urllib.error.URLError as e:
-        raise RuntimeError(f"Сетевая ошибка: {e}")
+
+    for attempt in range(1, retries + 1):
+        req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                wait = 60 * attempt  # 60, 120, 180 сек
+                print(f"             ⚠ Лимит запросов (429). Жду {wait} сек "
+                      f"(попытка {attempt}/{retries})...")
+                time.sleep(wait)
+                continue
+            body = e.read().decode("utf-8", errors="ignore")
+            raise RuntimeError(f"HTTP {e.code}: {body[:300]}")
+        except urllib.error.URLError as e:
+            raise RuntimeError(f"Сетевая ошибка: {e}")
+
+    raise RuntimeError("Превышен лимит запросов (429). Попробуйте завтра или смените провайдер.")
 
 
 # ---------------------------------------------------------------------------
@@ -314,6 +352,7 @@ def _call_openai_compatible(
         {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {api_key}",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         },
     )
     return result["choices"][0]["message"]["content"].strip()
@@ -446,7 +485,9 @@ def run(
             errors += 1
 
         if i < len(to_process):
-            time.sleep(REQUEST_DELAY)
+            delay = PROVIDER_DELAY.get(provider, REQUEST_DELAY)
+            if delay > 0:
+                time.sleep(delay)
 
     print(f"\n[summarize] Готово. Обработано: {processed}, ошибок: {errors}")
     print(f"[summarize] Хранилище обновлено: {store_path}")
