@@ -426,6 +426,16 @@ NARROW_SOURCES = {
     "rosinvest-bumles",
     "upackunion-stati",
     "lesprominform-news",
+    # Новые — тематика ЦБП/упаковки гарантирована
+    "tissueworldmagazine",
+    "packaging-gateway",
+    "papnews",
+    "pulpandpaper-technology",
+    "packaging-europe",
+    "nonwovens-industry",
+    "toscotec",
+    "sappi-news",
+    "the-paper-story",
 }
 
 
@@ -518,6 +528,43 @@ SOURCES: Dict[str, Dict[str, Any]] = {
     "rosinvest-bumles": {
         "type": "rss",
         "url": "https://rosinvest.com/newsrubrik_7.rss",
+    },
+    # ── Новые глобальные RSS-источники ──────────────────────────────
+    "tissueworldmagazine": {
+        "type": "rss",
+        "url": "https://www.tissueworldmagazine.com/feed/",
+    },
+    "packaging-gateway": {
+        "type": "rss",
+        "url": "https://www.packaging-gateway.com/feed/",
+    },
+    "papnews": {
+        "type": "rss",
+        "url": "https://www.papnews.com/feed/",
+    },
+    "pulpandpaper-technology": {
+        "type": "rss",
+        "url": "https://www.pulpandpaper-technology.com/feed/",
+    },
+    "packaging-europe": {
+        "type": "rss",
+        "url": "https://packagingeurope.com/rss",
+    },
+    "nonwovens-industry": {
+        "type": "rss",
+        "url": "https://www.nonwovens-industry.com/feed/",
+    },
+    "toscotec": {
+        "type": "rss",
+        "url": "https://www.toscotec.com/feed/",
+    },
+    "sappi-news": {
+        "type": "rss",
+        "url": "https://www.sappi.com/news/feed/",
+    },
+    "the-paper-story": {
+        "type": "rss",
+        "url": "https://thepaperstory.co.za/news/feed/",
     },
     "rbc": {
         "type": "rss",
