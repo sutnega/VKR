@@ -474,9 +474,13 @@ def run(
         new_summary = call_provider(provider, title, original, api_key, active_model)
 
         if new_summary:
-            id_index[it["id"]]["summary"] = new_summary
-            id_index[it["id"]]["summary_provider"] = provider
-            id_index[it["id"]]["summary_model"] = active_model
+            # Сохраняем оригинальный RSS-текст перед перезаписью (если ещё не сохранён)
+            item = id_index[it["id"]]
+            if not item.get("original_summary") and item.get("summary"):
+                item["original_summary"] = item["summary"]
+            item["summary"] = new_summary
+            item["summary_provider"] = provider
+            item["summary_model"] = active_model
             processed += 1
             print(f"             ✓ {len(new_summary)} символов")
             # Сохраняем сразу — чтобы не потерять прогресс при обрыве

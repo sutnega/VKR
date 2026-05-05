@@ -27,6 +27,7 @@ class NewsItem:
     published: Optional[str]  # ISO string or None
     published_raw: Optional[str]
     summary: Optional[str]
+    original_summary: Optional[str] = None  # оригинальный текст из RSS до AI-обработки
 
 
 StoreType = Dict[str, Any]
@@ -162,6 +163,7 @@ def fetch_rss_source(name: str, cfg: Dict[str, Any]) -> List[NewsItem]:
                 published=pub_iso,
                 published_raw=pub_raw or None,
                 summary=clean_desc,
+                original_summary=clean_desc,  # сохраняем оригинал до AI-обработки
             )
         )
 

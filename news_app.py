@@ -138,6 +138,7 @@ def _openai_compatible(url: str, api_key: str, model: str, title: str, original:
     result = _http_post(url, payload, {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     })
     return result["choices"][0]["message"]["content"].strip()
 
@@ -494,6 +495,22 @@ def show_full_card(row: pd.Series, store_path: str):
         st.info("Резюме ещё не сгенерировано.")
 
     st.markdown("")
+
+    # ── Оригинальный текст из RSS ──
+    original = str(row.get("original_summary", "") or "")
+    if original.strip() and original.strip() != summary.strip():
+        with st.expander("📄 Оригинальный текст из источника (RSS)"):
+            st.markdown(original)
+    elif not has_sum and summary and summary.strip():
+        # summary ещё не перезаписано AI — это и есть оригинальный RSS-текст
+        st.markdown("""
+        <div style="background:#1a1a2e; border-radius:6px; padding:14px 18px;
+             border-left:3px solid #888; margin-bottom:12px;">
+            <div style="color:#888; font-size:11px; font-weight:700; margin-bottom:8px;
+                 letter-spacing:1px;">📄 ТЕКСТ ИЗ ИСТОЧНИКА (RSS)</div>
+        </div>
+        """, unsafe_allow_html=True)
+        st.markdown(summary)
 
     # ── Ссылка ──
     if url:
